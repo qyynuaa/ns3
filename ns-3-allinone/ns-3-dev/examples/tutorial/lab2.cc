@@ -1,0 +1,167 @@
+/* this file is lab2 */
+
+#include "ns3/core-module.h" 
+#include "ns3/simulator-module.h" 
+#include "ns3/node-module.h" 
+#include "ns3/helper-module.h" 
+#include "ns3/mobility-module.h" 
+#include "ns3/contrib-module.h" 
+#include "ns3/wifi-module.h" 
+#include "ns3/aodv-helper.h" 
+#include "ns3/flow-monitor-helper.h" 
+
+using namespace ns3; 
+
+int 
+main (int argc, char *argv[]) 
+{ 
+
+LogComponentEnable("AodvRoutingProtocol", LOG_LEVEL_ALL); 
+CommandLine cmd; 
+cmd.Parse (argc, argv); 
+
+//Create nodes 
+NodeContainer nodes; 
+nodes.Create (200);
+
+//Initiate stop time (duration of simulation) 
+double stop_time = 80; 
+
+//On-Off application. 
+Config::SetDefault ("ns3::OnOffApplication::PacketSize",  StringValue ("512"));
+Config::SetDefault ("ns3::OnOffApplication::DataRate", StringValue ("100kb/s"));
+
+// turn off RTS/CTS for frames below 220 bytes (packet Size) 
+Config::SetDefault ("ns3::WifiRemoteStationManager::RtsCtsThreshold", StringValue ("220"));
+Config::SetDefault ("ns3::WifiRemoteStationManager::FragmentationThreshold", StringValue ("2200"));
+
+//Set the wifi Standard.. 
+WifiHelper wifihelper; 
+wifihelper.SetStandard(WIFI_PHY_STANDARD_80211b); 
+
+//Set up the physical objects.. 
+YansWifiPhyHelper wifiPhy  = YansWifiPhyHelper::Default (); 
+
+//TX GAIN 
+wifiPhy.Set("TxGain", DoubleValue(25)); 
+
+//RX GAIN 
+wifiPhy.Set("RxGain",DoubleValue(90)); 
+
+//Set up channel properties.. 
+YansWifiChannelHelper wifichan = YansWifiChannelHelper::Default(); 
+wifichan.AddPropagationLoss("ns3::FriisPropagationLossModel"); 
+
+//Create the channel... 
+wifiPhy.SetChannel(wifichan.Create()); 
+
+//Create an adhoc mac helper by default..(setting up mac layer) 
+NqosWifiMacHelper mac = NqosWifiMacHelper::Default (); 
+mac.SetType ("ns3::AdhocWifiMac"); 
+
+//Same transmission rate for every data packet sent. 
+wifihelper.SetRemoteStationManager ("ns3::ConstantRateWifiManager", "DataMode", StringValue ("DsssRate1Mbps"), "ControlMode",StringValue("DsssRate1Mbps"));
+
+//Installs nodes / Mac layer / Physical objects on the Netdevice 
+container.NetDeviceContainer devices = wifihelper.Install(wifiPhy,mac,nodes);
+
+//AodvHelper 
+AodvHelper aodv; 
+
+//Add Internet stacj to the nodes. 
+InternetStackHelper internet; 
+
+//Set routing protocol as AODV 
+internet.SetRoutingHelper (aodv); 
+
+//Install internet stack on the nodes and assign Ip addresses to them. 
+internet.Install (nodes); 
+Ipv4AddressHelper ipaddrss; 
+ipaddrss.SetBase("192.168.1.0", "255.255.255.0"); 
+Ipv4InterfaceContainer ipcontainer = ipaddrss.Assign(devices); 
+
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- 
+
+//Instantiate mobility helper 
+MobilityHelper mobility; 
+
+//Set up an object for position 
+ObjectFactory pos; 
+
+//Type = Rectangle 
+pos.SetTypeId ("ns3::RandomRectanglePositionAllocator"); 
+
+//Setup postion of X and Y 
+pos.Set ("X", RandomVariableValue (UniformVariable (0.0, 1000)));
+pos.Set ("Y", RandomVariableValue (UniformVariable (0.0, 1000)));
+
+//get the random position.. 
+Ptr<PositionAllocator> taPositionAlloc = pos.Create()->GetObject<PositionAllocator> (); 
+
+//Set up the mobility model.. 
+mobility.SetMobilityModel ("ns3::RandomWaypointMobilityModel", "Speed", RandomVariableValue (ConstantVariable (200)), "Pause", RandomVariableValue
+(ConstantVariable (0)), "PositionAllocator", PointerValue (taPositionAlloc));
+
+//set the random positions 
+mobility.SetPositionAllocator (taPositionAlloc); 
+
+//Install 
+mobility.Install (nodes); 
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- 
+
+//Send UDP traffic. Address of the node to send packet to.. 
+OnOffHelper cbrgenhelper("ns3::UdpSocketFactory", Address()); 
+
+//Set on/off time variable. 
+cbrgenhelper.SetAttribute("OnTime", RandomVariableValue (ConstantVariable (1)));
+cbrgenhelper.SetAttribute("OffTime", RandomVariableValue (ConstantVariable (0)));
+
+//Port .. 
+uint32_t port = 5000; 
+
+//Generate .. 
+ApplicationContainer cbrgen; 
+
+for (uint32_t j = 0,i=49; j < 10; j++,i--)
+{ 
+        //Remote is the address of the destination .. 
+        cbrgenhelper.SetAttribute ("Remote", AddressValue (InetSocketAddress(ipcontainer.GetAddress(i),port)));
+        cbrgen.Add(cbrgenhelper.Install(nodes.Get(j))); 
+} 
+//Start to generate traffic .. 
+cbrgen.Start(Seconds(0.0)); 
+
+//Stop generating traffic .. 
+cbrgen.Stop(Seconds(stop_time - 10.0)); 
+
+//Recieve .. 
+ApplicationContainer cbrrecv; 
+
+for (uint32_t k = 49; k >= 40; k--) 
+{ 
+        PacketSinkHelper sink ("ns3::UdpSocketFactory", Address(InetSocketAddress (ipcontainer.GetAddress (k), port))); 
+        cbrrecv.Add (sink.Install (nodes.Get (k))); 
+} 
+cbrrecv.Start(Seconds(1.0)); 
+cbrrecv.Stop(Seconds(stop_time - 10.0)); 
+
+//AsciiTraceHelper ascii; 
+//wifiPhy.EnableAsciiAll(ascii.CreateFileStream("test.tr")); 
+
+wifiPhy.EnablePcap("sample_wifi", devices.Get(0), true); 
+FlowMonitorHelper flow; 
+Ptr<FlowMonitor> flow_nodes = flow.InstallAll(); 
+flow_nodes->SetAttribute("DelayBinWidth", DoubleValue(0.001)); 
+flow_nodes->SetAttribute("JitterBinWidth", DoubleValue(0.001)); 
+flow_nodes->SetAttribute("PacketSizeBinWidth", DoubleValue(20)); 
+Simulator::Stop (Seconds (90.0)); 
+Simulator::Run(); 
+
+flow_nodes->CheckForLostPackets(); 
+
+flow_nodes->SerializeToXmlFile("Results_simple_wifi.xml", true, true); 
+
+Simulator::Destroy(); 
+} 
